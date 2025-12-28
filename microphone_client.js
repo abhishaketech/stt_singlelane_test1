@@ -1,6 +1,10 @@
 /**
- * STT Microphone Client (v3.2 - Base64 & WebSocket Optimized)
- * Features: Robust connection handling, detailed error logging, and clean UI state management.
+ * STT Microphone Client (v4.1.0)
+ * Features:
+ * - Real-time WebSocket Audio Streaming (Float32)
+ * - Biometric 256-dim Vector Visualization (Canvas)
+ * - Unique Call ID Handshake & Display
+ * - Robust Error Handling & Cleanup
  */
 
 // ==========================================
@@ -23,89 +27,122 @@ const cleanupBtn = document.getElementById('cleanup-btn');
 let websocket = null;
 let audioContext = null;
 let mediaStream = null;
-let inputSource = null;
 let processor = null;
 let isRecording = false;
+let currentCallId = null;
 
 // ==========================================
 // 3. UI Helper Functions
 // ==========================================
 
-// Updates the status banner with color coding
+/**
+ * Updates the status banner with appropriate styling
+ * Uses classes: status-info, status-success, status-warning, status-error
+ */
 function updateStatus(message, type = 'info') {
     statusDiv.textContent = message;
-    statusDiv.className = 'status'; // Reset class
-    statusDiv.classList.add(`status-${type}`); // Add specific type
+    // Reset to base class then add specific type
+    statusDiv.className = 'status'; 
+    statusDiv.classList.add(`status-${type}`);
     console.log(`[${type.toUpperCase()}] ${message}`);
 }
 
-// Formats error objects into readable strings
-function formatError(err) {
-    if (typeof err === 'string') return err;
-    if (err.message) return err.message;
-    return "Unknown error occurred";
+/**
+ * Visualizes the 256-dimensional speaker embedding as a bar chart.
+ * @param {HTMLCanvasElement} canvas - The canvas to draw on.
+ * @param {string} b64String - The Base64 encoded float32 array.
+ */
+function drawEmbedding(canvas, b64String) {
+    const ctx = canvas.getContext('2d');
+    
+    // Set resolution to match display size for sharpness
+    const width = canvas.width = canvas.offsetWidth;
+    const height = canvas.height = canvas.offsetHeight;
+    
+    // Decode Base64 -> Float32Array
+    const binaryString = atob(b64String);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+    }
+    const floatArray = new Float32Array(bytes.buffer);
+
+    // Clear Canvas
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = '#667eea'; // Match your primary CSS gradient color
+    
+    const barWidth = width / floatArray.length;
+    
+    // Draw 256 dimensions
+    for (let i = 0; i < floatArray.length; i++) {
+        const val = floatArray[i]; 
+        // Scale height for visibility (abs value * height * factor)
+        const barHeight = Math.abs(val) * (height / 2) * 5; 
+        
+        // Center bars vertically
+        const y = height / 2 - (val > 0 ? barHeight : 0);
+        
+        ctx.fillRect(i * barWidth, y, Math.max(1, barWidth), barHeight);
+    }
 }
 
-// Creates the visual card for transcription results
+/**
+ * Creates the visual card for transcription results & biometrics
+ */
 function createResultCard(data) {
     const card = document.createElement('div');
     card.className = 'result-box';
 
-    let html = `<div class="section-title">Transcription Result</div>`;
+    // 1. Header (Call ID & Time)
+    const time = new Date().toLocaleTimeString();
+    // Extract short ID for display (e.g., "ws-a1b2...")
+    const displayId = data.call_id ? data.call_id.substring(0, 18) + '...' : 'N/A';
     
-    // A. Transcription Text
-    if (data.transcription && data.transcription.trim().length > 0) {
-        html += `<p><strong>Text:</strong> ${data.transcription}</p>`;
-    } else {
-        html += `<p><em>No speech detected.</em></p>`;
-    }
+    let html = `
+        <div style="display:flex; justify-content:space-between; color:#666; font-size:0.85em; margin-bottom:10px; border-bottom:1px solid #eee; padding-bottom:5px;">
+            <span title="${data.call_id}"><strong>ID:</strong> ${displayId}</span>
+            <span>${time}</span>
+        </div>
+    `;
+    
+    // 2. Transcription Text
+    html += `<div style="font-size:1.1em; color:#333; margin-bottom:15px; line-height:1.6;">
+        ${data.transcription || "<em>No speech detected.</em>"}
+    </div>`;
 
-    // B. Base64 Fingerprint
-    // ... inside createResultCard(data) ...
-
-    // 2. Base64 Fingerprint & Audio Player
-    if (data.voice_fingerprint_sample_b64) {
-        const shortHash = data.voice_fingerprint_sample_b64.substring(0, 50) + "...";
-        
-        // Convert Base64 to a playable Audio Blob
-        const byteCharacters = atob(data.voice_fingerprint_sample_b64);
-        const byteNumbers = new Array(byteCharacters.length);
-        for (let i = 0; i < byteCharacters.length; i++) {
-            byteNumbers[i] = byteCharacters.charCodeAt(i);
-        }
-        const byteArray = new Uint8Array(byteNumbers);
-        
-        // Create WAV header (simplified) or raw PCM blob
-        // Since it's raw Float32, we need a WAV container to play it easily in browser, 
-        // OR we can just tell the user it's raw data.
-        // For simplicity, let's just show the data, as raw PCM playback in HTML requires more code.
-        
+    // 3. Biometric Visualization (Canvas)
+    if (data.voice_embedding_exists && data.voice_embedding_b64) {
         html += `
-            <div style="margin-top: 15px; border-top: 1px solid #ddd; padding-top: 10px;">
-                <p><strong>Captured Audio Fingerprint:</strong></p>
-                <div style="background:#f9f9f9; padding:10px; border-radius:4px; margin-bottom:5px;">
-                    <span style="font-size:12px; color:#555;">(Raw Audio Data Captured)</span>
+            <div style="background:#f8fafc; padding:15px; border-radius:8px; border:1px solid #e2e8f0; margin-top:10px;">
+                <div style="display:inline-flex; align-items:center; gap:5px; font-size:0.8em; background:#e0e7ff; color:#3730a3; padding:4px 8px; border-radius:4px; font-weight:600; margin-bottom:8px;">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18a8 8 0 1 1 8-8 8 8 0 0 1-8 8z"></path>
+                        <path d="M12 6a6 6 0 1 0 6 6 6 6 0 0 0-6-6zm0 10a4 4 0 1 1 4-4 4 4 0 0 1-4 4z"></path>
+                    </svg>
+                    Speaker Identity Vector (256-dim)
                 </div>
-                
-                <p style="margin-top:5px; font-size:12px;"><strong>Base64 Preview:</strong></p>
-                <code style="display:block; background:#fff; padding:8px; border:1px solid #ddd; border-radius:4px; word-break:break-all; font-size:11px; color:#555;">
-                    ${shortHash}
-                </code>
+                <canvas class="embedding-viz" style="width:100%; height:60px; background:#1e293b; border-radius:4px; display:block;"></canvas>
             </div>
         `;
     }
 
-    // C. Statistics
+    // 4. Statistics Footer
     html += `
-        <div class="info-text" style="margin-top: 10px;">
-            Duration: ${data.total_duration_seconds}s | Chunks: ${data.chunks_processed}
+        <div class="info-text">
+            Saved as: ${data.saved_file || 'Not saved'}
         </div>
     `;
 
     card.innerHTML = html;
     
-    // Insert new result at the top of the list
+    // Insert new result at the top of the output list (Stack LIFO)
     outputDiv.insertBefore(card, outputDiv.firstChild);
+
+    // 5. Render Canvas (must be done after element is inserted into DOM)
+    if (data.voice_embedding_exists) {
+        const canvas = card.querySelector('canvas');
+        if(canvas) drawEmbedding(canvas, data.voice_embedding_b64);
+    }
 }
 
 // ==========================================
@@ -114,24 +151,18 @@ function createResultCard(data) {
 
 function setupAudioProcessing() {
     try {
-        const desiredSampleRate = parseInt(sampleRateSelect.value);
-        
-        // Cross-browser AudioContext creation
         const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-        audioContext = new AudioContextClass({
-            sampleRate: desiredSampleRate
-        });
+        // Force 16000Hz to match backend requirement
+        audioContext = new AudioContextClass({ sampleRate: 16000 }); 
+        
+        const inputSource = audioContext.createMediaStreamSource(mediaStream);
 
-        // Create Source from the microphone stream
-        inputSource = audioContext.createMediaStreamSource(mediaStream);
-
-        // Create ScriptProcessor (Buffer Size: 4096 = approx 0.1s latency)
-        // Note: ScriptProcessor is deprecated but allows raw binary access without extra worklet files
+        // ScriptProcessor is deprecated but reliable for raw Float32 access. 
+        // Buffer Size 4096 = ~250ms latency
         processor = audioContext.createScriptProcessor(4096, 1, 1);
 
         processor.onaudioprocess = (e) => {
-            // Only send data if we are recording and the socket is open
-            if (!isRecording || !websocket || websocket.readyState !== WebSocket.OPEN) return;
+            if (!isRecording || websocket?.readyState !== WebSocket.OPEN) return;
 
             // Get Raw Float32 Data (Mono channel)
             const inputData = e.inputBuffer.getChannelData(0);
@@ -140,19 +171,17 @@ function setupAudioProcessing() {
             websocket.send(inputData.buffer);
         };
 
-        // Connect the audio nodes
+        // Connect the audio nodes: Source -> Processor -> Destination
         inputSource.connect(processor);
-        processor.connect(audioContext.destination); // Required destination for the processor to run
+        processor.connect(audioContext.destination); // Required for processor to run
         
     } catch (err) {
-        updateStatus(`Audio Setup Error: ${formatError(err)}`, 'error');
+        updateStatus(`Audio Setup Error: ${err.message}`, 'error');
         stopRecordingInternal();
     }
 }
 
-// Internal function to stop audio flow without resetting the whole UI
 function stopRecordingInternal() {
-    if (!isRecording) return;
     isRecording = false;
 
     // 1. Send "End" Signal to Server
@@ -163,27 +192,18 @@ function stopRecordingInternal() {
     // 2. Disconnect Audio Nodes
     if (processor) {
         processor.disconnect();
-        inputSource.disconnect();
+        processor = null;
     }
     
-    // 3. Close Audio Context to release hardware
+    // 3. Close Audio Context
     if (audioContext && audioContext.state !== 'closed') {
         audioContext.close();
         audioContext = null;
     }
 }
 
-// Helper to reset button states
-function resetRecordingUI() {
-    startBtn.disabled = false;
-    startBtn.classList.replace('btn-secondary', 'btn-primary');
-    
-    stopBtn.disabled = true;
-    stopBtn.classList.replace('btn-danger', 'btn-secondary');
-}
-
 // ==========================================
-// 5. Event Listeners (Button Clicks)
+// 5. Event Listeners
 // ==========================================
 
 // --- Initialize Microphone ---
@@ -191,111 +211,102 @@ initBtn.addEventListener('click', async () => {
     try {
         updateStatus('Requesting microphone access...', 'info');
         
-        // Check for browser support
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            throw new Error("Your browser does not support audio access. Please use Chrome, Edge, or Firefox.");
+            throw new Error("Browser API not supported.");
         }
 
-        // Request microphone access
         mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
         
-        updateStatus('Microphone initialized. Ready to record.', 'success');
+        updateStatus('Microphone Ready. Click Start Recording.', 'success');
         
-        // Enable Start Button
+        // Update Buttons
         initBtn.disabled = true;
-        initBtn.classList.replace('btn-primary', 'btn-secondary');
+        initBtn.classList.replace('btn-primary', 'btn-secondary'); // Grey out
+        initBtn.textContent = "Mic Initialized";
+        
         startBtn.disabled = false;
-        cleanupBtn.disabled = false;
+        startBtn.classList.replace('btn-secondary', 'btn-primary'); // Enable Start
         
     } catch (err) {
-        updateStatus(`Mic Error: ${formatError(err)}`, 'error');
+        updateStatus(`Mic Access Denied: ${err.message}`, 'error');
     }
 });
 
 // --- Start Recording ---
 startBtn.addEventListener('click', () => {
     if (!mediaStream) {
-        updateStatus('Error: Microphone stream lost. Please re-initialize.', 'error');
+        updateStatus('Error: Microphone stream lost. Reload page.', 'error');
         return;
     }
 
-    // UI Updates
-    isRecording = true;
-    startBtn.disabled = true;
-    startBtn.classList.replace('btn-primary', 'btn-secondary');
-    stopBtn.disabled = false;
-    stopBtn.classList.replace('btn-secondary', 'btn-danger'); // Red stop button
-    updateStatus('Connecting to server...', 'warning');
+    // 1. Connect WebSocket
+    // Ensure this matches your Python Server address
+    websocket = new WebSocket("ws://127.0.0.1:8000/ws/transcribe-stream");
 
-    // Create WebSocket Connection
-    try {
-        // ENSURE THIS MATCHES YOUR PYTHON SERVER ADDRESS
-        websocket = new WebSocket("ws://127.0.0.1:8000/ws/transcribe-stream");
-    } catch (e) {
-        updateStatus(`WebSocket Creation Error: ${formatError(e)}`, 'error');
-        return;
-    }
-
-    // WebSocket: Connected
     websocket.onopen = () => {
-        updateStatus('Connected! Streaming audio...', 'warning');
-        
-        // Send Configuration JSON
+        isRecording = true;
+        updateStatus('Handshaking with server...', 'warning');
+
+        // 2. Send Configuration
         const config = {
-            sample_rate: parseInt(sampleRateSelect.value),
+            sample_rate: 16000,
             language: languageSelect.value,
             word_level: wordLevelCheckbox.checked
         };
         websocket.send(JSON.stringify(config));
 
-        // Begin Audio Stream
+        // 3. Start Audio Stream
         setupAudioProcessing();
+
+        // UI Updates
+        startBtn.disabled = true;
+        startBtn.classList.replace('btn-primary', 'btn-secondary');
+        startBtn.textContent = "Recording...";
+        
+        stopBtn.disabled = false;
+        stopBtn.classList.replace('btn-secondary', 'btn-danger'); // Red Stop Button
     };
 
-    // WebSocket: Message Received
     websocket.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
 
-            if (data.status === 'chunk_processed') {
-                // Live status update
-                let fpStatus = data.fingerprint_extracted ? " | 🆔 Fingerprint Captured" : "";
-                updateStatus(`Recording... (${data.total_duration_seconds}s)${fpStatus}`, 'warning');
-            } 
-            else if (data.status === 'complete') {
-                // Final result received
+            if (data.status === 'ready') {
+                currentCallId = data.call_id;
+                // Show Call ID in status
+                updateStatus(`Recording Active [ID: ${currentCallId.split('-')[1]}...]`, 'warning');
+            
+            } else if (data.status === 'chunk_processed') {
+                // Optional: Update timer/counter here
+            
+            } else if (data.status === 'complete') {
                 createResultCard(data);
-                updateStatus('Transcription complete.', 'success');
-                resetRecordingUI();
+                updateStatus('Processing Complete.', 'success');
+                websocket.close(); // Clean close
                 
-                // Close socket nicely
-                websocket.close();
-            } 
-            else if (data.status === 'error') {
+                // Reset UI for next recording
+                startBtn.disabled = false;
+                startBtn.classList.replace('btn-secondary', 'btn-primary');
+                startBtn.textContent = "Start Recording";
+                stopBtn.disabled = true;
+                stopBtn.classList.replace('btn-danger', 'btn-secondary');
+            
+            } else if (data.status === 'error') {
                 updateStatus(`Server Error: ${data.error}`, 'error');
                 stopRecordingInternal();
-                resetRecordingUI();
             }
         } catch (e) {
-            console.error("Failed to parse WebSocket message:", event.data);
+            console.error("Parse error:", event.data);
         }
     };
 
-    // WebSocket: Connection Error
     websocket.onerror = (e) => {
-        console.error("WebSocket Error Object:", e);
-        updateStatus('Connection Failed. Is "main.py" running?', 'error');
+        updateStatus('Connection Failed. Is the server running?', 'error');
         stopRecordingInternal();
-        resetRecordingUI();
     };
-
-    // WebSocket: Closed
-    websocket.onclose = (e) => {
-        if (isRecording) {
-            stopRecordingInternal();
-            resetRecordingUI();
-            updateStatus(`Connection closed (Code: ${e.code})`, 'info');
-        }
+    
+    websocket.onclose = () => {
+        if(isRecording) stopRecordingInternal();
     };
 });
 
@@ -303,39 +314,26 @@ startBtn.addEventListener('click', () => {
 stopBtn.addEventListener('click', () => {
     updateStatus('Finalizing results...', 'info');
     stopRecordingInternal();
+    
+    // UI Updates immediately
+    stopBtn.disabled = true;
+    stopBtn.classList.replace('btn-danger', 'btn-secondary');
 });
 
-// --- Cleanup / Reset ---
+// --- Cleanup ---
 cleanupBtn.addEventListener('click', () => {
-    // Close WebSocket
-    if (websocket) websocket.close();
+    // Force stop everything
+    stopRecordingInternal();
     
-    // Close Audio Context
-    if (audioContext && audioContext.state !== 'closed') audioContext.close();
-    
-    // Stop all microphone tracks (turns off the red light on your mic/tab)
+    // Stop tracks
     if (mediaStream) {
         mediaStream.getTracks().forEach(track => track.stop());
     }
-    
-    // Reset variables
     mediaStream = null;
-    audioContext = null;
-    websocket = null;
-    isRecording = false;
-
-    // Clear output area
+    
+    // Clear UI
     outputDiv.innerHTML = '';
-
-    // Reset Buttons to initial state
-    initBtn.disabled = false;
-    initBtn.classList.replace('btn-secondary', 'btn-primary');
     
-    startBtn.disabled = true;
-    startBtn.classList.replace('btn-secondary', 'btn-primary');
-    
-    stopBtn.disabled = true;
-    stopBtn.classList.replace('btn-danger', 'btn-secondary');
-
-    updateStatus('Cleaned up. Click Initialize to start again.', 'info');
+    // Reload page to get clean state
+    window.location.reload();
 });
