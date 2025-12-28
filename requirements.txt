@@ -6,3 +6,5 @@ faster-whisper
 noisereduce
 scipy
 soundfile
+resemblyzer
+torch
